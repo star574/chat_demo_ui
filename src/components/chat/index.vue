@@ -1,6 +1,6 @@
 <template>
   <div class="contanier">
-    <video id="localVideo" autoplay v-if="remoteConnect" />
+    <video id="localVideo" autoplay />
     <video id="remoteVideo" autoplay />
     <el-button type="primary" @click="connect">connect</el-button>
   </div>
@@ -10,8 +10,7 @@
 export default {
   data() {
     return {
-      wsurl: "ws://localhost:8080/server/",
-      remoteConnect: false,
+      wsurl: "ws://192.168.31.205:8080/server/",
       wsStatus: false,
       localStream: null,
       peerConnection: null,
@@ -30,34 +29,22 @@ export default {
       // 捕捉视频 
       var _this = this;
       // 打开摄像头
-      navigator.getUserMedia = navigator.getUserMedia || navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia
+      navigator.getUserMedia = ( navigator.getUserMedia ||
+                       navigator.webkitGetUserMedia ||
+                       navigator.mozGetUserMedia ||
+                       navigator.msGetUserMedia);
       // 调用成功回调
       navigator.getUserMedia({ video: true, audio: false }, function (stream) {
         // 如果没有远程链接 
-        clearInterval()
-        setInterval(_this.setStream(stream), 100)
-      }, console.log)
-    },
-    setStream(stream) {
-      var _this = this;
-      let _remoteConnect = this.remoteConnect
-      console.log(_remoteConnect);
-      if (_remoteConnect) {
-        _this.addVideoURL("remoteVideo", stream)
-      } else {
+        _this.localStream = stream
         _this.addVideoURL("localVideo", stream)
-      }
+      }, console.log)
     },
     // 视频url赋值
     addVideoURL(elementId, stream) {
-      var video = document.getElementById(elementId);
-      this.localStream = stream
-      if ('srcObject' in video) {
-        video.srcObject = stream;
-      } else {
-        // 防止在新的浏览器里使用它，应为它已经不再支持了
-        video.src = window.URL.createObjectURL(stream);
-      }
+      let video = document.getElementById(elementId);
+      video.srcObject = stream;
+      video.play()
     },
     // ws部分
     wsConnect() {
@@ -72,9 +59,11 @@ export default {
         _this.wsStatus = true
       }
       _this.ws.onclose = function (event) {
+        _this.stop()
         console.log(userId + "已关闭WebSocket");
       }
       _this.ws.onerror = function (event) {
+        _this.stop()
         console.log(userId + "发生错误 尝试重连");
         // this.wsConnect()
       }
@@ -83,30 +72,39 @@ export default {
     },
     onmessage(event) {
       let _this = this
-      let msg = JSON.parse(event.data)
-      let evt = msg
-      if (msg.type === 'offer') {
-        console.log("接收到offer,设置offer,发送answer....")
-        _this.onOffer(evt);
-      } else if (msg.type === 'answer' && this.remoteConnect) {
-        console.log('接收到answer,设置answer SDP');
-        _this.onAnswer(evt);
-      } else if (msg.type === 'candidate' && this.remoteConnect) {
-        console.log('接收到ICE候选者..');
-        _this.onCandidate(evt);
-      } else if (msg.type === 'bye' && this.remoteConnect) {
-        console.log("WebRTC通信断开");
-        _this.stop();
+      try {
+        let msg = JSON.parse(event.data)
+        if (msg.type === 'offer') {
+          console.log("接收到offer,设置offer,发送answer....")
+          _this.onOffer(msg);
+        } else if (msg.type === 'answer') {
+          console.log('接收到answer,设置answer SDP-------------------------------');
+          _this.onAnswer(msg);
+        } else if (msg.type === 'candidate') {
+          console.log('接收到ICE候选者..');
+          _this.onCandidate(msg);
+        }
+        console.log(msg)
       }
+      catch (error) {
+        this.$notify.success(
+          {
+            title: '提示',
+            message: event.data,
+            type: 'success'
+          }
+        )
+      }
+
     },
     onCandidate(evt) {
-      var candidate = new RTCIceCandidate({
+      console.log(evt);
+      let _peerConnection = this.peerConnection
+      let candidate = new RTCIceCandidate({
         sdpMLineIndex: evt.sdpMLineIndex,
         sdpMid: evt.sdpMid, candidate: evt.candidate
       });
-      console.log("接收到Candidate...")
-      console.log(candidate);
-      this.peerConnection.addIceCandidate(candidate);
+      _peerConnection.addIceCandidate(candidate);
     },
     onAnswer(evt) {
       this.setAnswer(evt);
@@ -122,7 +120,7 @@ export default {
     onOffer(evt) {
       let _this = this
       _this.setOffer(evt);
-      _this.sendAnswer(evt);
+      _this.sendAnswer();
     },
     setOffer(evt) {
       if (this.peerConnection) {
@@ -133,22 +131,25 @@ export default {
       this.peerConnection = this.RTCConnection()
       this.peerConnection.setRemoteDescription(new RTCSessionDescription(evt));
     },
-    sendAnswer(evt) {
-      console.log('发送Answer,创建远程会话描述...');
-      if (!peerConnection) {
+    sendAnswer() {
+      let _this = this
+      let _peerConnection = this.peerConnection
+      if (!_peerConnection) {
         console.error('peerConnection不存在!');
         return;
       }
-      peerConnection.createAnswer(function (sessionDescription) {//成功时
-        let mediaConstraints = {
-          'mandatory': {
-            'OfferToReceiveAudio': true,
-            'OfferToReceiveVideo': true
-          }
-        };
-        this.setLocalDescription(sessionDescription);
+      let mediaConstraints = {
+        'mandatory': {
+          'OfferToReceiveAudio': true,
+          'OfferToReceiveVideo': true
+        }
+      }
+      console.log('准备创建Answer-SDP');
+      _peerConnection.createAnswer(function (sessionDescription) {//成功时
         console.log("发送: Answer-SDP");
-        this.sendSDP(sessionDescription);
+        console.log(sessionDescription);
+        _this.sendSDP(sessionDescription);
+        _peerConnection.setLocalDescription(sessionDescription);
       }, function () {                                             //失败时
         console.log("创建Answer失败");
       }, mediaConstraints);
@@ -157,9 +158,7 @@ export default {
     connect() {
       let _this = this
       // 创建offer
-      console.log('remoteConnect :>> ', _this.remoteConnect);
-      console.log('wsStatus :>> ', _this.wsStatus);
-      if (!_this.remoteConnect && _this.wsStatus) {
+      if (_this.wsStatus) {
         let mediaConstraints = {
           'mandatory': {
             'OfferToReceiveAudio': true,
@@ -169,13 +168,10 @@ export default {
         _this.peerConnection = this.RTCConnection()
         _this.peerConnection.createOffer(function (sessionDescription) {
           _this.peerConnection.setLocalDescription(sessionDescription);
-          console.log("发送: SDP offer");
           _this.sendSDP(sessionDescription);
         }, function (err) {  //失败时调用
-          console.log("创建Offer失败");
-        }, mediaConstraints),
-          this.remoteConnect = true;
-
+          console.log("创建Answer失败");
+        }, mediaConstraints)
       } else {
         alert("发送offer失败");
       }
@@ -183,7 +179,8 @@ export default {
     RTCConnection() {
       let _this = this
       // ice 配置
-      var pc_config = { "iceServers": [] };
+      var pc_config = { "iceServers": [
+      ] };
       // 创建RTC链接
       var peer = null;
       try {
@@ -208,16 +205,15 @@ export default {
       peer.addStream(_this.localStream);
 
       // 监听视频流
-      peer.addEventListener("addstream", this.onRemoteStreamAdded, false);
-      peer.addEventListener("removestream", this.onRemoteStreamRemoved, false);
+      peer.addEventListener("addstream", _this.onRemoteStreamAdded, false);
+      peer.addEventListener("removestream", _this.onRemoteStreamRemoved, false);
 
       return peer
 
     },
     // 发送候选者
     sendCandidate(candidate) {
-      var text = JSON.stringify(candidate);
-      this.ws.send(text)// socket发送
+      this.sendSDP(candidate)// socket发送
     },
 
     // 监听视频流
@@ -226,14 +222,15 @@ export default {
       let _this = this
       console.log("添加远程视频流");
       // remoteVideo.src = window.URL.createObjectURL(event.stream);
-      _this.addVideoURL("remote", event.stream)
+      console.log("远程视频流信息:");
+      console.log(event.stream);
+      _this.addVideoURL("remoteVideo", event.stream)
     },
 
     // 当远程结束通信时，取消本地video元素中的显示
     onRemoteStreamRemoved(event) {
       let _this = this
       console.log("移除远程视频流");
-      _this.remoteConnect = false
     }
     ,
     sendSDP(text) {
@@ -241,8 +238,7 @@ export default {
       this.ws.send(msg)
     },
     stop() {
-      this.remoteConnect = false,
-        this.wsStatus = false,
+      this.wsStatus = false,
         this.localStream = null,
         this.peerConnection = null
     }
@@ -258,21 +254,14 @@ export default {
   display: flex;
   justify-content: center;
   align-items: center;
-  position: relative;
 }
 #localVideo {
-  width: 200px;
-  height: 250px;
-  background-color: rgb(0, 255, 98);
-  position: absolute;
-  left: 47%;
-  bottom: 600px;
-  opacity: 0.7;
+  width: 400px;
+  height: 800px;
 }
 #remoteVideo {
   width: 400px;
   height: 800px;
-  background-color: rgba(0, 255, 13, 0.5);
   margin: 0 auto;
 }
 </style>
